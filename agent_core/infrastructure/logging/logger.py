@@ -24,10 +24,11 @@ class JsonFormatter(logging.Formatter):
         (re.compile(r'(token["\']?\s*[:=]\s*["\']?)([^"\'\s]+)', re.I), r'\1***REDACTED***'),
     ]
     
-    def __init__(self, redact_content: bool = False, max_content_length: int = 1000):
+    def __init__(self, redact_content: bool = False, max_content_length: int = 1000, pretty: bool = False):
         super().__init__()
         self.redact_content = redact_content
         self.max_content_length = max_content_length
+        self.pretty = pretty
     
     def _redact_sensitive(self, text: str) -> str:
         """脱敏敏感信息。"""
@@ -61,7 +62,7 @@ class JsonFormatter(logging.Formatter):
                     extra[k] = self._redact_sensitive(v)
             payload.update(extra)
         
-        return json.dumps(payload, ensure_ascii=False)
+        return json.dumps(payload, ensure_ascii=False, indent=2 if self.pretty else None)
 
 
 def setup_logger() -> logging.Logger:
@@ -78,7 +79,8 @@ def setup_logger() -> logging.Logger:
     fh.setLevel(logging.INFO)
     fh.setFormatter(JsonFormatter(
         redact_content=settings.log_redact_content,
-        max_content_length=1000
+        max_content_length=1000,
+        pretty=True,
     ))
     
     logger.addHandler(fh)
@@ -87,8 +89,10 @@ def setup_logger() -> logging.Logger:
     if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
         ch = logging.StreamHandler()
         ch.setLevel(logging.WARNING)  # 控制台只显示警告和错误
-        ch.setFormatter(logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        ch.setFormatter(JsonFormatter(
+            redact_content=settings.log_redact_content,
+            max_content_length=500,
+            pretty=False,
         ))
         logger.addHandler(ch)
     

@@ -17,6 +17,8 @@ from agent_core.providers.registry import PROVIDER_REGISTRY
 import threading
 from agent_core.flows import runner as lang_runner
 from agent_core.tasks import TaskConfig, run_agent as task_run_agent
+from agent_core.tasks.tools import task_tool_defs
+from agent_core.gui.log_window import LogWindow
 
 
 class App:
@@ -29,116 +31,178 @@ class App:
         self.sending = False
         self.user_line_inserted = False
         self.current_stream_text = ""
-        # 新增：记录当前选中的项目根目录（用于 TaskConfig.project_root）
         self.project_root: Optional[str] = getattr(settings, "workspace_root", None)
         self.env_vars = env_utils.read_env_file()
-        self.conv_data = {}  # 存储显示文本到ID的映射
+        self.conv_data = {}
         self.provider_names = sorted(PROVIDER_REGISTRY.keys())
         self.model_entries = self._build_model_entries()
-        self.active_provider = self.env_vars.get("DEFAULT_PROVIDER") or getattr(settings, "default_provider", self.model_entries[0][0][0] if self.model_entries else "glm")
-        self.active_model = self.env_vars.get("DEFAULT_MODEL") or getattr(settings, "default_model", self.model_entries[0][0][1] if self.model_entries else "ide-chat")
-        main = tk.PanedWindow(root, orient=tk.HORIZONTAL)
+        self.active_provider = self.env_vars.get("DEFAULT_PROVIDER") or getattr(
+            settings, "default_provider", self.model_entries[0][0][0] if self.model_entries else "glm"
+        )
+        self.active_model = self.env_vars.get("DEFAULT_MODEL") or getattr(
+            settings, "default_model", self.model_entries[0][0][1] if self.model_entries else "ide-chat"
+        )
+        self.log_window: Optional[LogWindow] = None
+
+        self.font_body = ("Microsoft YaHei UI", 11)
+        self.font_mono = ("Consolas", 10)
+        self.bg_color = "#0b1823"
+        self.panel_color = "#132736"
+        self.text_color = "#dce2e9"
+        self.root.configure(bg=self.bg_color)
+        self.root.option_add("*Font", self.font_body)
+
+        main = tk.Frame(root, bg=self.bg_color)
         main.pack(fill=tk.BOTH, expand=True)
-        left = tk.Frame(main)
-        right = tk.Frame(main)
-        main.add(left, minsize=260)
-        main.add(right)
-        lf_top = tk.Frame(left)
-        lf_top.pack(fill=tk.BOTH, expand=True)
-        tk.Label(lf_top, text="会话").pack(anchor=tk.W)
-        self.conv_list = tk.Listbox(lf_top, height=8)
-        self.conv_list.pack(fill=tk.BOTH, expand=True)
-        lf_btns = tk.Frame(lf_top)
-        lf_btns.pack(fill=tk.X)
-        tk.Button(lf_btns, text="刷新", command=self.refresh_convs).pack(side=tk.LEFT)
-        tk.Button(lf_btns, text="新建", command=self.create_conv).pack(side=tk.LEFT)
-        tk.Button(lf_btns, text="重命名", command=self.rename_conv).pack(side=tk.LEFT)
-        tk.Button(lf_btns, text="删除", command=self.delete_conv).pack(side=tk.LEFT)
-        tk.Label(left, text="消息").pack(anchor=tk.W)
-        self.msg_list = tk.Listbox(left, height=14)
-        self.msg_list.pack(fill=tk.BOTH, expand=True)
-        self.msg_list.bind("<<ListboxSelect>>", self.on_select_msg)
-        self.conv_list.bind("<<ListboxSelect>>", self.on_select_conv)
-        rt_top = tk.Frame(right)
-        rt_top.pack(fill=tk.BOTH, expand=True)
-        self.chat = scrolledtext.ScrolledText(rt_top, width=80, height=18)
+
+        sidebar = tk.Frame(main, bg=self.panel_color, width=260)
+        sidebar.pack(side=tk.LEFT, fill=tk.Y)
+        sidebar.pack_propagate(False)
+
+        tk.Label(sidebar, text="模型 / Provider", fg=self.text_color, bg=self.panel_color).pack(anchor=tk.W, padx=12, pady=(12, 4))
+        self.provider_status_list = tk.Listbox(sidebar, height=10, bg="#0f1f2b", fg=self.text_color, selectbackground="#1f4c64")
+        self.provider_status_list.pack(fill=tk.X, padx=12, pady=(0, 12))
+        self.provider_status_list.bind("<<ListboxSelect>>", self.on_provider_select)
+        self.provider_env_keys = {"glm": "GLM_API_KEY", "kimi": "KIMI_API_KEY"}
+
+        tools_panel = tk.LabelFrame(sidebar, text="内置工具", fg=self.text_color, bg=self.panel_color, highlightbackground="#1f3a4d", highlightthickness=1)
+        tools_panel.pack(fill=tk.BOTH, padx=12, pady=(0, 12), expand=True)
+        self.tool_list = tk.Listbox(tools_panel, bg="#0f1f2b", fg=self.text_color, selectbackground="#1f4c64")
+        self.tool_list.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+
+        content = tk.Frame(main, bg=self.bg_color)
+        content.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        header = tk.Frame(content, bg=self.bg_color)
+        header.pack(fill=tk.X, pady=(10, 4))
+        tk.Label(header, text="项目目录:", fg=self.text_color, bg=self.bg_color).pack(side=tk.LEFT, padx=(8, 4))
+        self.workspace_label = tk.Label(header, text=self.project_root or "<未选择>", fg="#9fb4c8", bg=self.bg_color)
+        self.workspace_label.pack(side=tk.LEFT, padx=(0, 8))
+        tk.Button(header, text="选择项目目录", command=self.choose_workspace).pack(side=tk.LEFT)
+        tk.Label(header, text="当前模型:", fg=self.text_color, bg=self.bg_color).pack(side=tk.LEFT, padx=(16, 4))
+        self.model_info = tk.Label(header, text="未选择", fg="#9fb4c8", bg=self.bg_color)
+        self.model_info.pack(side=tk.LEFT)
+
+        self.show_advanced = tk.BooleanVar(value=False)
+        settings_panel = tk.Frame(content, bg=self.panel_color)
+        settings_panel.pack(fill=tk.X, padx=8, pady=4)
+        tk.Label(settings_panel, text="模型选择", fg=self.text_color, bg=self.panel_color).pack(anchor=tk.W, padx=12, pady=(8, 0))
+        self.model_selector = ttk.Combobox(settings_panel, values=[entry for _, entry in self.model_entries], state="readonly")
+        self.model_selector.pack(fill=tk.X, padx=12, pady=(2, 8))
+        self.model_selector.bind("<<ComboboxSelected>>", self.on_model_entry_change)
+        self.config_status = tk.Label(settings_panel, text="", fg="#99d4ff", bg=self.panel_color)
+        self.config_status.pack(fill=tk.X, padx=12, pady=(0, 8))
+        toggle = tk.Frame(content, bg=self.bg_color)
+        toggle.pack(fill=tk.X, padx=8, pady=(0, 4))
+        tk.Checkbutton(
+            toggle,
+            text="显示高级设置 (API / .env)",
+            variable=self.show_advanced,
+            command=self._toggle_advanced,
+            fg=self.text_color,
+            bg=self.bg_color,
+            selectcolor=self.bg_color,
+        ).pack(anchor=tk.W, padx=4)
+        self.advanced_panel = tk.LabelFrame(content, text="高级设置", fg=self.text_color, bg=self.panel_color)
+        key_section = tk.Frame(self.advanced_panel, bg=self.panel_color)
+        key_section.pack(fill=tk.X, padx=12, pady=8)
+        tk.Label(key_section, text="API Key", fg=self.text_color, bg=self.panel_color).pack(anchor=tk.W)
+        self.provider_key_entry = tk.Entry(key_section)
+        self.provider_key_entry.pack(fill=tk.X, pady=4)
+        key_btns = tk.Frame(key_section, bg=self.panel_color)
+        key_btns.pack(fill=tk.X)
+        tk.Button(key_btns, text="保存 Key", command=self.save_provider_key).pack(side=tk.LEFT, padx=(0, 8))
+        tk.Button(key_btns, text="清除 Key", command=self.clear_provider_key).pack(side=tk.LEFT)
+        env_box = tk.Frame(self.advanced_panel, bg=self.panel_color)
+        env_box.pack(fill=tk.BOTH, padx=12, pady=8)
+        self.env_list = tk.Listbox(env_box, height=5, bg="#0f1f2b", fg=self.text_color, selectbackground="#1f4c64")
+        self.env_list.pack(fill=tk.BOTH, expand=True)
+        self.env_list.bind("<<ListboxSelect>>", self.on_env_select)
+        env_form = tk.Frame(self.advanced_panel, bg=self.panel_color)
+        env_form.pack(fill=tk.X, padx=12, pady=(0, 6))
+        self.env_key_entry = self._mk_labeled_entry(env_form, "Key")
+        self.env_value_entry = self._mk_labeled_entry(env_form, "Value")
+        env_btns = tk.Frame(self.advanced_panel, bg=self.panel_color)
+        env_btns.pack(fill=tk.X, padx=12, pady=(0, 8))
+        tk.Button(env_btns, text="添加/更新", command=self.add_env_var).pack(side=tk.LEFT, padx=(0, 8))
+        tk.Button(env_btns, text="删除", command=self.delete_env_var).pack(side=tk.LEFT)
+
+        chat_panel = tk.Frame(content, bg=self.bg_color)
+        chat_panel.pack(fill=tk.BOTH, expand=True, padx=8, pady=(4, 10))
+        self.chat = scrolledtext.ScrolledText(chat_panel, width=80, height=16, bg="#101f2c", fg=self.text_color, insertbackground="#ffffff")
         self.chat.pack(fill=tk.BOTH, expand=True)
-        self.chat.tag_config("user", foreground="#1a73e8")
-        self.chat.tag_config("assistant", foreground="#34a853")
-        self.chat.tag_config("system", foreground="#5f6368")
-        self.chat.tag_config("error", foreground="#d93025")
-        rt_in = tk.Frame(rt_top)
-        rt_in.pack(fill=tk.X)
-        self.entry = tk.Entry(rt_in)
+        self.chat.tag_config("user", foreground="#5fb0ff")
+        self.chat.tag_config("assistant", foreground="#5fd18e")
+        self.chat.tag_config("system", foreground="#8aa1b1")
+        self.chat.tag_config("error", foreground="#ff6b6b")
+
+        rt_in = tk.Frame(chat_panel, bg=self.bg_color)
+        rt_in.pack(fill=tk.X, pady=(6, 0))
+        self.entry = tk.Entry(rt_in, font=self.font_mono)
         self.entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.entry.bind("<Return>", self.on_send_event)
         self.send_btn = tk.Button(rt_in, text="发送", command=self.on_send)
-        self.send_btn.pack(side=tk.LEFT)
-        # 新增：任务级 Agent 按钮，触发 TaskConfig/run_agent
+        self.send_btn.pack(side=tk.LEFT, padx=(6, 3))
         self.task_btn = tk.Button(rt_in, text="任务Agent", command=self.on_run_task)
         self.task_btn.pack(side=tk.LEFT)
-        self.status = tk.Label(rt_top, text="准备就绪")
-        self.status.pack(fill=tk.X)
-        self.model_info = tk.Label(rt_top, text="模型: 未选择", fg="#5f6368")
-        self.model_info.pack(fill=tk.X)
-        workspace_frame = tk.Frame(rt_top)
-        workspace_frame.pack(fill=tk.X)
-        # 修改：使用“项目目录”概念，并显示当前 project_root
-        tk.Label(workspace_frame, text="项目目录:").pack(side=tk.LEFT)
-        self.workspace_label = tk.Label(workspace_frame, text=self.project_root or "<未选择>", fg="#5f6368")
-        self.workspace_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Button(workspace_frame, text="选择项目目录", command=self.choose_workspace).pack(side=tk.LEFT)
-        settings_panel = tk.LabelFrame(right, text="Provider / 模型")
-        settings_panel.pack(fill=tk.BOTH, expand=True)
-        tk.Label(settings_panel, text="可用 Provider（状态）").pack(anchor=tk.W)
-        self.provider_status_list = tk.Listbox(settings_panel, height=max(3, len(self.provider_names)))
-        self.provider_status_list.pack(fill=tk.X)
-        self.provider_status_list.bind("<<ListboxSelect>>", self.on_provider_select)
-        self.provider_env_keys = {"glm": "GLM_API_KEY", "kimi": "KIMI_API_KEY"}
-        provider_key_frame = tk.Frame(settings_panel)
-        provider_key_frame.pack(fill=tk.X, pady=2)
-        tk.Label(provider_key_frame, text="API Key").pack(side=tk.LEFT)
-        self.provider_key_entry = tk.Entry(provider_key_frame)
-        self.provider_key_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        key_btns = tk.Frame(settings_panel)
-        key_btns.pack(fill=tk.X)
-        tk.Button(key_btns, text="保存 Key", command=self.save_provider_key).pack(side=tk.LEFT)
-        tk.Button(key_btns, text="清除 Key", command=self.clear_provider_key).pack(side=tk.LEFT)
-        tk.Label(settings_panel, text="当前模型（选择以切换）").pack(anchor=tk.W, pady=(6, 0))
-        self.model_entries = self._build_model_entries()
-        self.model_selector = ttk.Combobox(settings_panel, values=[entry for _, entry in self.model_entries], state="readonly")
-        self.model_selector.pack(fill=tk.X)
-        self.model_selector.bind("<<ComboboxSelected>>", self.on_model_entry_change)
-        self.config_status = tk.Label(settings_panel, text="", fg="#5f6368")
-        self.config_status.pack(fill=tk.X)
+        self.status = tk.Label(chat_panel, text="准备就绪", fg="#9fb4c8", bg=self.bg_color)
+        self.status.pack(fill=tk.X, pady=(4, 0))
 
-        advanced_panel = tk.LabelFrame(right, text="高级：.env 变量")
-        advanced_panel.pack(fill=tk.BOTH, expand=True)
-        self.env_list = tk.Listbox(advanced_panel, height=6)
-        self.env_list.pack(fill=tk.BOTH, expand=True)
-        self.env_list.bind("<<ListboxSelect>>", self.on_env_select)
-        env_form = tk.Frame(advanced_panel)
-        env_form.pack(fill=tk.X)
-        self.env_key_entry = self._mk_labeled_entry(env_form, "key")
-        self.env_value_entry = self._mk_labeled_entry(env_form, "value")
-        env_btns = tk.Frame(advanced_panel)
-        env_btns.pack(fill=tk.X)
-        tk.Button(env_btns, text="添加/更新", command=self.add_env_var).pack(side=tk.LEFT)
-        tk.Button(env_btns, text="删除", command=self.delete_env_var).pack(side=tk.LEFT)
+        conv_frame = tk.Frame(content, bg=self.bg_color)
+        conv_frame.pack(fill=tk.X, padx=8, pady=(0, 4))
+        tk.Label(conv_frame, text="会话列表", fg=self.text_color, bg=self.bg_color).pack(anchor=tk.W)
+        self.conv_list = tk.Listbox(conv_frame, height=4, bg="#0f1f2b", fg=self.text_color, selectbackground="#1f4c64")
+        self.conv_list.pack(fill=tk.X, expand=True)
+        self.conv_list.bind("<<ListboxSelect>>", self.on_select_conv)
+        conv_btns = tk.Frame(conv_frame, bg=self.bg_color)
+        conv_btns.pack(fill=tk.X, pady=4)
+        tk.Button(conv_btns, text="刷新", command=self.refresh_convs).pack(side=tk.LEFT, padx=(0, 4))
+        tk.Button(conv_btns, text="新建", command=self.create_conv).pack(side=tk.LEFT, padx=(0, 4))
+        tk.Button(conv_btns, text="重命名", command=self.rename_conv).pack(side=tk.LEFT, padx=(0, 4))
+        tk.Button(conv_btns, text="删除", command=self.delete_conv).pack(side=tk.LEFT)
 
+        msg_frame = tk.Frame(content, bg=self.bg_color)
+        msg_frame.pack(fill=tk.BOTH, padx=8, pady=(0, 10))
+        tk.Label(msg_frame, text="消息树", fg=self.text_color, bg=self.bg_color).pack(anchor=tk.W)
+        self.msg_list = tk.Listbox(msg_frame, height=5, bg="#0f1f2b", fg=self.text_color, selectbackground="#1f4c64")
+        self.msg_list.pack(fill=tk.BOTH, expand=True)
+        self.msg_list.bind("<<ListboxSelect>>", self.on_select_msg)
+
+        self._toggle_advanced()
+        self._start_log_window()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_root_close)
         self.refresh_convs()
         self.refresh_env_view()
         self.refresh_provider_controls()
+        self._populate_tool_list()
         self._update_model_display(None)
 
     def _mk_labeled_entry(self, parent, label):
         """创建带标签的输入框，简化表单布局。"""
-        fr = tk.Frame(parent)
+        fr = tk.Frame(parent, bg=self.panel_color)
         fr.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Label(fr, text=label).pack(side=tk.LEFT)
+        tk.Label(fr, text=label, fg=self.text_color, bg=self.panel_color).pack(side=tk.LEFT)
         ent = tk.Entry(fr)
-        ent.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ent.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
         return ent
+
+    def _populate_tool_list(self):
+        if not hasattr(self, "tool_list"):
+            return
+        self.tool_list.delete(0, tk.END)
+        for tool_def in task_tool_defs():
+            desc = (tool_def.description or "").strip()
+            text = f"{tool_def.name} · {desc}" if desc else tool_def.name
+            self.tool_list.insert(tk.END, text)
+
+    def _toggle_advanced(self):
+        """根据勾选状态显示/隐藏高级设置面板。"""
+        if not hasattr(self, "advanced_panel"):
+            return
+        if self.show_advanced.get():
+            self.advanced_panel.pack(fill=tk.X, padx=8, pady=4)
+        else:
+            self.advanced_panel.pack_forget()
 
     def refresh_convs(self):
         """刷新会话列表。"""
@@ -232,6 +296,22 @@ class App:
         self.status.config(text="已删除会话")
 
     # ---- 环境变量 / Provider 控制 ----
+
+    def _start_log_window(self):
+        """启动实时日志窗口，便于观察普通日志。"""
+        try:
+            self.log_window = LogWindow(self.root)
+        except Exception as exc:  # pragma: no cover - 防御
+            messagebox.showwarning("日志窗口", f"无法启动日志窗口: {exc}")
+
+    def _on_root_close(self):
+        """根窗口关闭时，同时清理日志窗口与后台 handler。"""
+        if self.log_window and self.log_window.top.winfo_exists():
+            try:
+                self.log_window._on_close()
+            except Exception:
+                pass
+        self.root.destroy()
 
     def refresh_env_view(self):
         self.env_list.delete(0, tk.END)
