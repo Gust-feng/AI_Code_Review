@@ -3,6 +3,7 @@
 提供简化的函数接口供上层应用调用。
 """
 
+from pathlib import Path
 from typing import Optional, Dict, Any
 
 from agent_core.config.settings import settings
@@ -11,11 +12,12 @@ from agent_core.agents.ide_helper_agent import IDEHelperAgent
 from agent_core.infrastructure.storage.json_store import JsonConversationStore
 from agent_core.infrastructure.logging.logger import logger
 from agent_core.providers import create_provider
+from agent_core.tools.executor import ToolExecutor, default_tools, default_tool_defs
 
 
 _store: Optional[ConversationStore] = None
-# key: (provider, model, enable_tools)
-_agents: dict[tuple[str, str, bool], IDEHelperAgent] = {}
+# key: (provider, model, root, enable_tools)
+_agents: dict[tuple[str, str, str, bool], IDEHelperAgent] = {}
 
 
 def _get_store() -> ConversationStore:
@@ -28,6 +30,8 @@ def _get_store() -> ConversationStore:
 def get_agent(
     provider_name: Optional[str] = None,
     model_name: Optional[str] = None,
+    *,
+    project_root: Optional[str] = None,
     enable_tools: bool = True,
 ) -> IDEHelperAgent:
     """获取指定 Provider/模型的 Agent（按需创建并缓存）。
@@ -38,16 +42,24 @@ def get_agent(
 
     provider_key = (provider_name or getattr(settings, "default_provider", "glm")).lower()
     model_key = model_name or getattr(settings, "default_model", "ide-chat")
-    cache_key = (provider_key, model_key, enable_tools)
+    root = project_root or getattr(settings, "workspace_root", str(Path.cwd()))
+    root_resolved = str(Path(root).expanduser().resolve())
+    cache_key = (provider_key, model_key, root_resolved, enable_tools)
     agent = _agents.get(cache_key)
     if agent:
         return agent
 
     provider_client = create_provider(provider_key)
+    tool_executor = None
+    tool_defs = None
+    if enable_tools:
+        tool_executor = ToolExecutor(default_tools(root_resolved))
+        tool_defs = default_tool_defs()
     agent = IDEHelperAgent(
         store=_get_store(),
         provider_client=provider_client,
-        tool_executor=None,
+        tool_executor=tool_executor,
+        tool_defs=tool_defs,
         temperature=0.3,
         enable_tools=enable_tools,
         model_name=model_key,
@@ -59,7 +71,7 @@ def get_agent(
 def get_default_agent() -> IDEHelperAgent:
     """兼容旧接口：获取默认 Provider/模型的 Agent。"""
 
-    return get_agent(enable_tools=True)
+    return get_agent(project_root=getattr(settings, "workspace_root", str(Path.cwd())), enable_tools=True)
 
 
 def run_ide_chat(
@@ -86,8 +98,16 @@ def run_ide_chat(
     Raises:
         各种 domain.exceptions 中定义的异常
     """
+    project_root = None
+    if meta:
+        project_root = meta.get("project_root")
     try:
-        agent = get_agent(provider_name, model_name, enable_tools=True)
+        agent = get_agent(
+            provider_name,
+            model_name,
+            project_root=project_root,
+            enable_tools=True,
+        )
         conv, user_rec, assistant_rec = agent.chat(
             user_input=user_input,
             conversation_id=conversation_id,
@@ -139,7 +159,15 @@ def stream_ide_chat(
     # 保证前端仍然可以获得流式文本输出。
     # 流式模式现在也支持工具调用：这里使用带工具能力的 Agent，
     # Agent 会先内部完成工具调用闭环，再以流式方式返回最终回答。
-    agent = get_agent(provider_name, model_name, enable_tools=True)
+    project_root = None
+    if meta:
+        project_root = meta.get("project_root")
+    agent = get_agent(
+        provider_name,
+        model_name,
+        project_root=project_root,
+        enable_tools=True,
+    )
     stream = agent.chat_stream(
         user_input=user_input,
         conversation_id=conversation_id,

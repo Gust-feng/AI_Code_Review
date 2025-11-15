@@ -165,6 +165,11 @@ SCANNER_TOOLS = {
 }
 ```
 
+## 🎯 Agent 集成
+
+最新的 `run_static_analysis` 工具（定义在 `agent_core/tasks/tools.py`）会调用 `agent_core.scanners.run_all_scanners`，自动运行 Semgrep/Bandit/ESLint，并将 Issue 列表（JSON 可序列化）返回给 LLM。  
+如需扩展新的扫描器，只要实现 `Scanner` 接口并注册到 `SCANNERS` 列表即可，Agent 会自动识别并纳入分析流程。
+
 ## 📊 配置文件说明
 
 ### Python

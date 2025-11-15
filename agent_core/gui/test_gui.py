@@ -523,7 +523,8 @@ class App:
         self.chat.insert(tk.END, f"用户: {text}\n", "user")
         self.user_line_inserted = True
         self.current_stream_text = ""
-        meta = {"provider": provider, "model": model}
+        project_root = self.project_root or settings.workspace_root
+        meta = {"provider": provider, "model": model, "project_root": project_root}
 
         def worker():
             try:

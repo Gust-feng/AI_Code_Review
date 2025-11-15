@@ -10,6 +10,7 @@ from agent_core.tools.definitions import ToolDef, ToolParam
 
 from .config import TaskConfig
 from .file_provider import FileToolProvider
+from agent_core.scanners import run_all_scanners
 
 
 ToolHandler = Callable[[Dict[str, Any], TaskConfig, FileToolProvider], Any]
@@ -153,6 +154,23 @@ def _make_tool_defs() -> Dict[str, ToolSpec]:
                 },
             ),
             handler=_write_handler,
+        )
+    )
+
+    def _scan_handler(args: Dict[str, Any], config: TaskConfig, _provider: FileToolProvider) -> str:
+        issues = run_all_scanners(config.project_root)
+        return json.dumps({"issues": [issue.to_dict() for issue in issues]}, ensure_ascii=False)
+
+    add(
+        ToolSpec(
+            name="run_static_analysis",
+            is_write=False,
+            definition=ToolDef(
+                name="run_static_analysis",
+                description="运行集成的静态扫描器并返回所有 Issue",
+                params={},
+            ),
+            handler=_scan_handler,
         )
     )
 
