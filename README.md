@@ -1,4 +1,5 @@
 > 此项目已废弃，已有新项目代替
+> 
 > 望周知
 
 
@@ -6,15 +7,6 @@
 # Agent Core - 底层 AGENT 系统
 
 一个用于 IDE 助手和代码审查的本地 AI Agent 内核系统。
-
-## 特性
-
-- ✅ 支持 Git 样式的会话树结构（支持分叉对话）
-- ✅ JSON 持久化存储
-- ✅ 多 Provider 抽象（当前内置 GLM、Kimi，默认 GLM）
-- ✅ 只读工具系统（read_file, list_files, search_code, propose_edit）
-- ✅ 结构化日志
-- ✅ Windows 本地环境优化
 
 ## 安装
 
@@ -114,18 +106,4 @@ agent_core/
 └── tests/           # 测试用例
 ```
 
-## 安全注意事项
 
-⚠️ **重要**：
-- 不要提交 `.env` 文件到版本控制
-- API 密钥仅存储在本地
-- 默认不使用系统代理
-- 日志可配置脱敏（设置 `AGENT_LOG_REDACT_CONTENT=true`）
-
-## 技术规格
-
-详见 `产品指导书.md` 技术规格文档。
-
-## 许可
-
-本项目仅供学习和个人使用。
